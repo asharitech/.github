@@ -1,0 +1,6 @@
+{
+  "name": "Add to Engineering Board",
+  "description": "Automatically adds new issues and PRs to the Ashari.tech Engineering project board",
+  "iconName": "octicon project",
+  "categories": ["automation"]
+}

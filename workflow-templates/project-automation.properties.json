@@ -1,0 +1,6 @@
+{
+  "name": "Project Board Automation",
+  "description": "Full project board automation: auto-add, status transitions (Backlog → In Review → Done)",
+  "iconName": "octicon workflow",
+  "categories": ["automation"]
+}

@@ -1,0 +1,164 @@
+name: Project Automation
+
+on:
+  issues:
+    types: [opened, reopened, closed]
+  pull_request:
+    types: [opened, reopened, closed, ready_for_review]
+  pull_request_review:
+    types: [submitted]
+
+env:
+  PROJECT_ID: PVT_kwDOCFvb1s4BLK7m
+  STATUS_FIELD_ID: PVTSSF_lADOCFvb1s4BLK7mzg60yRA
+  BACKLOG_OPTION_ID: 67a78220
+  TODO_OPTION_ID: d14b220a
+  IN_PROGRESS_OPTION_ID: 61e300b3
+  IN_REVIEW_OPTION_ID: d38816e9
+  DONE_OPTION_ID: 6449f371
+
+jobs:
+  add-to-project:
+    if: github.event.action == 'opened' || github.event.action == 'reopened'
+    runs-on: ubuntu-latest
+    outputs:
+      item-id: ${{ steps.add.outputs.itemId }}
+    steps:
+      - name: Add to project
+        id: add
+        uses: actions/add-to-project@v1.0.2
+        with:
+          project-url: https://github.com/orgs/asharitech/projects/2
+          github-token: ${{ secrets.PROJECT_TOKEN }}
+
+      - name: Set initial status to Backlog
+        if: github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+        run: |
+          gh api graphql -f query='
+            mutation($project: ID!, $item: ID!, $field: ID!, $value: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $project
+                itemId: $item
+                fieldId: $field
+                value: { singleSelectOptionId: $value }
+              }) {
+                projectV2Item { id }
+              }
+            }' \
+            -f project="${{ env.PROJECT_ID }}" \
+            -f item="${{ steps.add.outputs.itemId }}" \
+            -f field="${{ env.STATUS_FIELD_ID }}" \
+            -f value="${{ env.BACKLOG_OPTION_ID }}"
+
+  set-in-review:
+    if: github.event_name == 'pull_request' && github.event.action == 'ready_for_review'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get linked issues
+        id: linked
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+        run: |
+          # Get PR body and extract linked issue numbers
+          PR_BODY="${{ github.event.pull_request.body }}"
+          ISSUES=$(echo "$PR_BODY" | grep -oE '(closes|fixes|resolves) #[0-9]+' | grep -oE '[0-9]+' || true)
+          echo "issues=$ISSUES" >> $GITHUB_OUTPUT
+
+      - name: Update linked issues to In Review
+        if: steps.linked.outputs.issues != ''
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+        run: |
+          for ISSUE_NUM in ${{ steps.linked.outputs.issues }}; do
+            # Get issue node ID
+            ISSUE_ID=$(gh api repos/${{ github.repository }}/issues/$ISSUE_NUM --jq '.node_id')
+
+            # Get project item ID
+            ITEM_ID=$(gh api graphql -f query='
+              query($nodeId: ID!) {
+                node(id: $nodeId) {
+                  ... on Issue {
+                    projectItems(first: 10) {
+                      nodes {
+                        id
+                        project { id }
+                      }
+                    }
+                  }
+                }
+              }' -f nodeId="$ISSUE_ID" --jq '.data.node.projectItems.nodes[] | select(.project.id == "${{ env.PROJECT_ID }}") | .id')
+
+            if [ -n "$ITEM_ID" ]; then
+              gh api graphql -f query='
+                mutation($project: ID!, $item: ID!, $field: ID!, $value: String!) {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: $project
+                    itemId: $item
+                    fieldId: $field
+                    value: { singleSelectOptionId: $value }
+                  }) {
+                    projectV2Item { id }
+                  }
+                }' \
+                -f project="${{ env.PROJECT_ID }}" \
+                -f item="$ITEM_ID" \
+                -f field="${{ env.STATUS_FIELD_ID }}" \
+                -f value="${{ env.IN_REVIEW_OPTION_ID }}"
+            fi
+          done
+
+  set-done:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get item from project
+        id: get-item
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" == "issues" ]; then
+            NODE_ID="${{ github.event.issue.node_id }}"
+          else
+            NODE_ID="${{ github.event.pull_request.node_id }}"
+          fi
+
+          ITEM_ID=$(gh api graphql -f query='
+            query($nodeId: ID!) {
+              node(id: $nodeId) {
+                ... on Issue {
+                  projectItems(first: 10) {
+                    nodes { id project { id } }
+                  }
+                }
+                ... on PullRequest {
+                  projectItems(first: 10) {
+                    nodes { id project { id } }
+                  }
+                }
+              }
+            }' -f nodeId="$NODE_ID" --jq '.data.node.projectItems.nodes[] | select(.project.id == "${{ env.PROJECT_ID }}") | .id' 2>/dev/null || true)
+
+          echo "item-id=$ITEM_ID" >> $GITHUB_OUTPUT
+
+      - name: Set status to Done
+        if: steps.get-item.outputs.item-id != ''
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+        run: |
+          gh api graphql -f query='
+            mutation($project: ID!, $item: ID!, $field: ID!, $value: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $project
+                itemId: $item
+                fieldId: $field
+                value: { singleSelectOptionId: $value }
+              }) {
+                projectV2Item { id }
+              }
+            }' \
+            -f project="${{ env.PROJECT_ID }}" \
+            -f item="${{ steps.get-item.outputs.item-id }}" \
+            -f field="${{ env.STATUS_FIELD_ID }}" \
+            -f value="${{ env.DONE_OPTION_ID }}"
